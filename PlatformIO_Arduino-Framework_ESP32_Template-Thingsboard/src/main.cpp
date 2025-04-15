@@ -3,12 +3,16 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "DHT20.h"
+#include <HTTPClient.h>
+#include <Update.h>
+#include <WiFiClient.h>
 
 // Task handles
 TaskHandle_t Task1Handle = NULL;
 TaskHandle_t Task2Handle = NULL;
 TaskHandle_t Task3Handle = NULL;
 TaskHandle_t MqttTaskHandle = NULL;
+TaskHandle_t OTATaskHandle = NULL;
 
 // DHT20 Sensor
 DHT20 DHT;
@@ -70,6 +74,49 @@ void connectMQTT() {
     }
 }
 
+void checkOTAUpdate() {
+    const char* firmware_url = "http://10.0.232.103:8000/firmware.bin"; // ✅ Đảm bảo IP đúng
+    Serial.println("[OTA] Checking for firmware update...");
+
+    HTTPClient http;
+    http.begin(firmware_url);
+
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+        int contentLength = http.getSize();
+        WiFiClient* stream = http.getStreamPtr();
+
+        if (Update.begin(contentLength)) {
+            size_t written = Update.writeStream(*stream);
+
+            if (written == contentLength) {
+                Serial.println("[OTA] Write successful.");
+            } else {
+                Serial.printf("[OTA] Write failed! Only %d/%d bytes written.\n", written, contentLength);
+            }
+
+            if (Update.end()) {
+                if (Update.isFinished()) {
+                    Serial.println("[OTA] Update successful, restarting...");
+                    ESP.restart();
+                } else {
+                    Serial.println("[OTA] Update incomplete.");
+                }
+            } else {
+                Serial.printf("[OTA] Update error #%d\n", Update.getError());
+            }
+        } else {
+            Serial.println("[OTA] Not enough space to begin update.");
+        }
+    } else {
+        Serial.printf("[OTA] HTTP error code: %d\n", httpCode);
+    }
+
+    http.end();
+}
+
+
+
 // Task 1: In ra console
 void Task1(void *pvParameters) {
     while (1) {
@@ -130,6 +177,13 @@ void MqttTask(void *pvParameters) {
     }
 }
 
+void OTATask(void *pvParameters) {
+    while (1) {
+        checkOTAUpdate();
+        vTaskDelay(pdMS_TO_TICKS(60000));  // Kiểm tra mỗi 60 giây
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     Wire.begin(I2C_SDA, I2C_SCL);
@@ -152,6 +206,7 @@ void setup() {
     xTaskCreate(Task2, "Task2", 1000, NULL, 1, &Task2Handle);
     xTaskCreate(Task3, "DHT20Task", 2000, NULL, 1, &Task3Handle);
     xTaskCreate(MqttTask, "MQTTTask", 4000, NULL, 1, &MqttTaskHandle);
+    xTaskCreate(OTATask, "OTATask", 4000, NULL, 1, &OTATaskHandle);
 }
 
 void loop() {
